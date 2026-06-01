@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: hotel-pms-postgres
+    environment:
+      POSTGRES_USER: hotel
+      POSTGRES_PASSWORD: hotel
+      POSTGRES_DB: hotel_pms
+    ports:
+      - "5432:5432"
+    volumes:
+      - hotel_pms_postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: hotel-pms-redis
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    container_name: hotel-pms-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: hotel
+      MINIO_ROOT_PASSWORD: hotel-password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - hotel_pms_minio:/data
+
+volumes:
+  hotel_pms_postgres:
+  hotel_pms_minio:
