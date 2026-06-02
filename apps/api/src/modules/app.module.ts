@@ -7,6 +7,7 @@ import { PermissionsGuard } from "./auth/permissions.guard";
 import { AvailabilityModule } from "./availability/availability.module";
 import { CashModule } from "./cash/cash.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
+import { DocumentScansModule } from "./document-scans/document-scans.module";
 import { FoliosModule } from "./folios/folios.module";
 import { HealthModule } from "./health/health.module";
 import { HousekeepingModule } from "./housekeeping/housekeeping.module";
@@ -26,6 +27,7 @@ import { UsersModule } from "./users/users.module";
     AuthModule,
     HealthModule,
     DashboardModule,
+    DocumentScansModule,
     AvailabilityModule,
     HousekeepingModule,
     MaintenanceModule,

@@ -11,6 +11,7 @@ import {
   Layers,
   LogOut,
   ReceiptText,
+  ScanLine,
   Search,
   ShieldCheck,
   Sparkles,
@@ -45,6 +46,7 @@ const navSections: {
     items: [
       { href: "/housekeeping/mobile", label: "Mucamas movil", icon: Sparkles },
       { href: "/housekeeping", label: "Housekeeping", icon: Sparkles },
+      { href: "/document-scanner", label: "Scanner DNI", icon: ScanLine },
       { href: "/maintenance", label: "Mantenimiento", icon: Wrench },
     ],
   },

@@ -26,6 +26,7 @@ import {
   Search,
   Sparkles,
   UserRound,
+  Users,
   Wallet,
   Wrench,
   X,
@@ -524,6 +525,18 @@ function RoomBoardContent({ permissionsState }: { permissionsState: SessionPermi
   const selectedCompleteOccupants = selectedReservation
     ? countCompleteOccupants(selectedReservation.occupants ?? [])
     : 0;
+  const selectedGuestCountLabel = selectedReservation
+    ? `${selectedRequiredOccupants} pax`
+    : "0 pax";
+  const selectedGuestCountHint = selectedReservation
+    ? selectedReservation.status === "in_house"
+      ? selectedCompleteOccupants > 0
+        ? `${selectedCompleteOccupants} registrados`
+        : "Alojada"
+      : ["confirmed", "assigned"].includes(selectedReservation.status)
+        ? `${selectedCompleteOccupants}/${selectedRequiredOccupants} registrados`
+        : statusLabels[selectedReservation.status] ?? selectedReservation.status
+    : "Sin reserva activa";
   const selectedRoomingComplete =
     Boolean(selectedReservation) &&
     selectedRequiredOccupants > 0 &&
@@ -1546,6 +1559,12 @@ function RoomBoardContent({ permissionsState }: { permissionsState: SessionPermi
                 <StatusLine icon={<Sparkles size={16} />} label="Limpieza" value={selectedRoom.cleaningStatus} />
                 <StatusLine icon={<Wrench size={16} />} label="Mantenimiento" value={selectedRoom.maintenanceStatus} />
                 <StatusLine icon={<UserRound size={16} />} label="Capacidad" value={`${selectedRoom.capacity} pax`} />
+                <StatusLine
+                  icon={<Users size={16} />}
+                  label="Huespedes"
+                  value={selectedGuestCountLabel}
+                  hint={selectedGuestCountHint}
+                />
               </div>
 
               <RoomCapabilityPanel
@@ -1569,6 +1588,9 @@ function RoomBoardContent({ permissionsState }: { permissionsState: SessionPermi
                     <p>
                       {formatDate(selectedReservation.checkInDate)} -{" "}
                       {formatDate(selectedReservation.checkOutDate)}
+                    </p>
+                    <p>
+                      {`Huespedes: ${selectedRequiredOccupants} pax (${selectedReservation.adults} adultos / ${selectedReservation.children} menores)`}
                     </p>
                     {Number(selectedReservation.depositAmount ?? 0) > 0 ? (
                       <p>
@@ -2541,16 +2563,19 @@ function StatusLine({
   icon,
   label,
   value,
+  hint,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
+  hint?: string;
 }) {
   return (
     <div>
       {icon}
       <span>{label}</span>
       <strong>{statusLabels[value] ?? value}</strong>
+      {hint ? <small>{hint}</small> : null}
     </div>
   );
 }

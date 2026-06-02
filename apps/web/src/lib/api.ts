@@ -27,9 +27,11 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   });
 
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
+    const text = await response.text().catch(() => "");
+    const body = text ? JSON.parse(text) : null;
     throw new Error(body?.message ?? `Error ${response.status}`);
   }
 
-  return response.json();
+  const text = await response.text();
+  return (text ? JSON.parse(text) : null) as T;
 }

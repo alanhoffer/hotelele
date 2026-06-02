@@ -185,14 +185,29 @@ async function seedRooms(
 
 async function seedReservations(hotelId: string, standardTypeId: string, superiorTypeId: string) {
   const today = startOfUtcDay(new Date());
+  const threeDaysAgo = addDays(today, -3);
   const yesterday = addDays(today, -1);
   const tomorrow = addDays(today, 1);
   const inTwoDays = addDays(today, 2);
+  const inThreeDays = addDays(today, 3);
   const inFourDays = addDays(today, 4);
+  const inFiveDays = addDays(today, 5);
+  const inSixDays = addDays(today, 6);
+  const inEightDays = addDays(today, 8);
+  const inTenDays = addDays(today, 10);
 
-  const room102 = await prisma.room.findUnique({ where: { hotelId_number: { hotelId, number: "102" } } });
-  const room201 = await prisma.room.findUnique({ where: { hotelId_number: { hotelId, number: "201" } } });
-  if (!room102 || !room201) return;
+  const demoRooms = await prisma.room.findMany({
+    where: { hotelId, number: { in: ["101", "102", "103", "104", "201", "202", "203"] } },
+  });
+  const roomByNumber = (number: string) => demoRooms.find((room) => room.number === number);
+  const room101 = roomByNumber("101");
+  const room102 = roomByNumber("102");
+  const room103 = roomByNumber("103");
+  const room104 = roomByNumber("104");
+  const room201 = roomByNumber("201");
+  const room202 = roomByNumber("202");
+  const room203 = roomByNumber("203");
+  if (!room101 || !room102 || !room103 || !room104 || !room201 || !room202 || !room203) return;
 
   const guestArrival = await upsertGuest(
     "00000000-0000-0000-0000-000000000101",
@@ -201,6 +216,7 @@ async function seedReservations(hotelId: string, standardTypeId: string, superio
     "Perez",
     "32888777",
     "martina.perez@example.com",
+    { phone: "11 4411-2200", nationality: "Argentina", notes: "Titular demo llegada hoy." },
   );
   const guestFuture = await upsertGuest(
     "00000000-0000-0000-0000-000000000102",
@@ -209,6 +225,7 @@ async function seedReservations(hotelId: string, standardTypeId: string, superio
     "Rios",
     "30111222",
     "lucas.rios@example.com",
+    { phone: "11 5566-7788", nationality: "Argentina" },
   );
   const guestInHouse = await upsertGuest(
     "00000000-0000-0000-0000-000000000103",
@@ -217,7 +234,104 @@ async function seedReservations(hotelId: string, standardTypeId: string, superio
     "Molina",
     "28777444",
     "ana.molina@example.com",
+    { phone: "11 6677-8899", nationality: "Uruguay" },
   );
+  const guestPending = await upsertGuest(
+    "00000000-0000-0000-0000-000000000104",
+    hotelId,
+    "Sofia",
+    "Benitez",
+    "34111888",
+    "sofia.benitez@example.com",
+    { phone: "11 4000-1100", nationality: "Paraguay", notes: "Reserva pendiente de confirmacion." },
+  );
+  const guestCompleted = await upsertGuest(
+    "00000000-0000-0000-0000-000000000105",
+    hotelId,
+    "Diego",
+    "Alvarez",
+    "25999111",
+    "diego.alvarez@example.com",
+    { phone: "11 4222-3344", nationality: "Chile" },
+  );
+  const guestNoShow = await upsertGuest(
+    "00000000-0000-0000-0000-000000000106",
+    hotelId,
+    "Valeria",
+    "Costa",
+    "36777123",
+    "valeria.costa@example.com",
+    { phone: "11 4333-5522", nationality: "Brasil" },
+  );
+  const guestCancelled = await upsertGuest(
+    "00000000-0000-0000-0000-000000000107",
+    hotelId,
+    "Bruno",
+    "Silva",
+    "33333444",
+    "bruno.silva@example.com",
+    { phone: "11 4888-9900", nationality: "Argentina" },
+  );
+
+  const pending = await prisma.reservation.upsert({
+    where: { hotelId_code: { hotelId, code: "R-DEMO-PENDING" } },
+    update: {
+      guestId: guestPending.id,
+      roomTypeId: standardTypeId,
+      assignedRoomId: room101.id,
+      status: "pending",
+      source: "phone",
+      checkInDate: inFiveDays,
+      checkOutDate: inEightDays,
+      adults: 1,
+      children: 1,
+      currency: "ARS",
+      totalAmount: 260000,
+      depositAmount: 0,
+      depositPaid: false,
+      depositMethod: null,
+      depositReference: null,
+      notes: "Demo estado pendiente con menor y datos incompletos.",
+    },
+    create: {
+      hotelId,
+      guestId: guestPending.id,
+      roomTypeId: standardTypeId,
+      assignedRoomId: room101.id,
+      code: "R-DEMO-PENDING",
+      status: "pending",
+      source: "phone",
+      checkInDate: inFiveDays,
+      checkOutDate: inEightDays,
+      adults: 1,
+      children: 1,
+      currency: "ARS",
+      totalAmount: 260000,
+      depositAmount: 0,
+      depositPaid: false,
+      notes: "Demo estado pendiente con menor y datos incompletos.",
+    },
+  });
+  await resetDemoReservationOperation(pending.id);
+  await replaceDemoOccupants(hotelId, pending.id, [
+    {
+      firstName: "Sofia",
+      lastName: "Benitez",
+      documentNumber: "34111888",
+      phone: "11 4000-1100",
+      nationality: "Paraguay",
+      ageCategory: "adult",
+      primary: true,
+    },
+    {
+      firstName: "Tomas",
+      lastName: "Benitez",
+      documentNumber: null,
+      phone: null,
+      nationality: "Paraguay",
+      ageCategory: "child",
+    },
+  ]);
 
   const arrival = await prisma.reservation.upsert({
     where: { hotelId_code: { hotelId, code: "R-DEMO-ARRIVAL" } },
@@ -235,6 +349,7 @@ async function seedReservations(hotelId: string, standardTypeId: string, superio
       depositPaid: true,
       depositMethod: "card",
       depositReference: "Sena demo tarjeta",
+      notes: "Reserva demo para probar check-in.",
     },
     create: {
       hotelId,
@@ -259,34 +374,56 @@ async function seedReservations(hotelId: string, standardTypeId: string, superio
   });
 
   await resetDemoReservationOperation(arrival.id);
+  await replaceDemoOccupants(hotelId, arrival.id, [
+    {
+      firstName: "Martina",
+      lastName: "Perez",
+      documentNumber: "32888777",
+      phone: "11 4411-2200",
+      nationality: "Argentina",
+      ageCategory: "adult",
+      primary: true,
+    },
+    {
+      firstName: "Nicolas",
+      lastName: "Perez",
+      documentNumber: "32999111",
+      phone: "11 4411-2201",
+      nationality: "Argentina",
+      ageCategory: "adult",
+    },
+  ]);
 
   const future = await prisma.reservation.upsert({
     where: { hotelId_code: { hotelId, code: "R-DEMO-FUTURE" } },
     update: {
       guestId: guestFuture.id,
       roomTypeId: superiorTypeId,
-      assignedRoomId: null,
+      assignedRoomId: room202.id,
       status: "confirmed",
-      checkInDate: tomorrow,
-      checkOutDate: inFourDays,
+      source: "online_csv",
+      checkInDate: inThreeDays,
+      checkOutDate: inSixDays,
       adults: 2,
       children: 1,
+      currency: "ARS",
       totalAmount: 450000,
       depositAmount: 100000,
       depositPaid: false,
       depositMethod: null,
       depositReference: null,
+      notes: "Reserva confirmada demo visible en calendario.",
     },
     create: {
       hotelId,
       guestId: guestFuture.id,
       roomTypeId: superiorTypeId,
-      assignedRoomId: null,
+      assignedRoomId: room202.id,
       code: "R-DEMO-FUTURE",
       status: "confirmed",
       source: "online_csv",
-      checkInDate: tomorrow,
-      checkOutDate: inFourDays,
+      checkInDate: inThreeDays,
+      checkOutDate: inSixDays,
       adults: 2,
       children: 1,
       currency: "ARS",
@@ -297,6 +434,33 @@ async function seedReservations(hotelId: string, standardTypeId: string, superio
     },
   });
   await resetDemoReservationOperation(future.id);
+  await replaceDemoOccupants(hotelId, future.id, [
+    {
+      firstName: "Lucas",
+      lastName: "Rios",
+      documentNumber: "30111222",
+      phone: "11 5566-7788",
+      nationality: "Argentina",
+      ageCategory: "adult",
+      primary: true,
+    },
+    {
+      firstName: "Camila",
+      lastName: "Rios",
+      documentNumber: "31222333",
+      phone: "11 5566-7799",
+      nationality: "Argentina",
+      ageCategory: "adult",
+    },
+    {
+      firstName: "Mateo",
+      lastName: "Rios",
+      documentNumber: "48999111",
+      phone: null,
+      nationality: "Argentina",
+      ageCategory: "child",
+    },
+  ]);
 
   const inHouse = await prisma.reservation.upsert({
     where: { hotelId_code: { hotelId, code: "R-DEMO-INHOUSE" } },
@@ -314,6 +478,7 @@ async function seedReservations(hotelId: string, standardTypeId: string, superio
       depositPaid: false,
       depositMethod: null,
       depositReference: null,
+      notes: "Estadia demo para probar check-out.",
     },
     create: {
       hotelId,
@@ -334,6 +499,17 @@ async function seedReservations(hotelId: string, standardTypeId: string, superio
       notes: "Estadia demo para probar check-out.",
     },
   });
+  await replaceDemoOccupants(hotelId, inHouse.id, [
+    {
+      firstName: "Ana",
+      lastName: "Molina",
+      documentNumber: "28777444",
+      phone: "11 6677-8899",
+      nationality: "Uruguay",
+      ageCategory: "adult",
+      primary: true,
+    },
+  ]);
 
   const stay = await prisma.stay.upsert({
     where: { reservationId: inHouse.id },
@@ -398,6 +574,245 @@ async function seedReservations(hotelId: string, standardTypeId: string, superio
     where: { id: room201.id },
     data: { commercialStatus: "occupied" },
   });
+
+  const completed = await prisma.reservation.upsert({
+    where: { hotelId_code: { hotelId, code: "R-DEMO-COMPLETED" } },
+    update: {
+      guestId: guestCompleted.id,
+      roomTypeId: superiorTypeId,
+      assignedRoomId: room203.id,
+      status: "completed",
+      source: "direct",
+      checkInDate: threeDaysAgo,
+      checkOutDate: today,
+      adults: 2,
+      children: 0,
+      currency: "ARS",
+      totalAmount: 380000,
+      depositAmount: 0,
+      depositPaid: false,
+      depositMethod: null,
+      depositReference: null,
+      notes: "Demo finalizada: salida hoy y habitacion sucia.",
+    },
+    create: {
+      hotelId,
+      guestId: guestCompleted.id,
+      roomTypeId: superiorTypeId,
+      assignedRoomId: room203.id,
+      code: "R-DEMO-COMPLETED",
+      status: "completed",
+      source: "direct",
+      checkInDate: threeDaysAgo,
+      checkOutDate: today,
+      adults: 2,
+      children: 0,
+      currency: "ARS",
+      totalAmount: 380000,
+      depositAmount: 0,
+      depositPaid: false,
+      notes: "Demo finalizada: salida hoy y habitacion sucia.",
+    },
+  });
+  await replaceDemoOccupants(hotelId, completed.id, [
+    {
+      firstName: "Diego",
+      lastName: "Alvarez",
+      documentNumber: "25999111",
+      phone: "11 4222-3344",
+      nationality: "Chile",
+      ageCategory: "adult",
+      primary: true,
+    },
+    {
+      firstName: "Paula",
+      lastName: "Alvarez",
+      documentNumber: "27666111",
+      phone: "11 4222-3345",
+      nationality: "Chile",
+      ageCategory: "adult",
+    },
+  ]);
+  const completedStay = await prisma.stay.upsert({
+    where: { reservationId: completed.id },
+    update: {
+      hotelId,
+      roomId: room203.id,
+      status: "checked_out",
+      checkedInAt: threeDaysAgo,
+      checkedOutAt: today,
+    },
+    create: {
+      hotelId,
+      reservationId: completed.id,
+      roomId: room203.id,
+      status: "checked_out",
+      checkedInAt: threeDaysAgo,
+      checkedOutAt: today,
+    },
+  });
+  const completedFolio = await prisma.folio.upsert({
+    where: { reservationId: completed.id },
+    update: {
+      hotelId,
+      stayId: completedStay.id,
+      roomId: room203.id,
+      status: "closed",
+      currency: "ARS",
+      closedAt: today,
+    },
+    create: {
+      hotelId,
+      reservationId: completed.id,
+      stayId: completedStay.id,
+      roomId: room203.id,
+      status: "closed",
+      currency: "ARS",
+      closedAt: today,
+    },
+  });
+  await prisma.invoice.deleteMany({ where: { folioId: completedFolio.id } });
+  await prisma.payment.deleteMany({ where: { folioId: completedFolio.id } });
+  await prisma.charge.deleteMany({ where: { folioId: completedFolio.id } });
+  await prisma.charge.create({
+    data: {
+      hotelId,
+      folioId: completedFolio.id,
+      kind: "lodging",
+      description: "Alojamiento demo finalizado",
+      quantity: 1,
+      unitAmount: 380000,
+      totalAmount: 380000,
+    },
+  });
+  await prisma.payment.create({
+    data: {
+      hotelId,
+      folioId: completedFolio.id,
+      method: "transfer",
+      currency: "ARS",
+      amount: 380000,
+      reference: "Pago demo finalizado",
+    },
+  });
+  await prisma.room.update({
+    where: { id: room203.id },
+    data: { commercialStatus: "available", cleaningStatus: "dirty" },
+  });
+
+  const noShow = await prisma.reservation.upsert({
+    where: { hotelId_code: { hotelId, code: "R-DEMO-NOSHOW" } },
+    update: {
+      guestId: guestNoShow.id,
+      roomTypeId: standardTypeId,
+      assignedRoomId: room103.id,
+      status: "no_show",
+      source: "online_csv",
+      checkInDate: yesterday,
+      checkOutDate: tomorrow,
+      adults: 1,
+      children: 0,
+      currency: "ARS",
+      totalAmount: 180000,
+      depositAmount: 50000,
+      depositPaid: true,
+      depositMethod: "transfer",
+      depositReference: "Sena demo no-show",
+      notes: "Demo no-show para revisar estado y datos de huesped.",
+    },
+    create: {
+      hotelId,
+      guestId: guestNoShow.id,
+      roomTypeId: standardTypeId,
+      assignedRoomId: room103.id,
+      code: "R-DEMO-NOSHOW",
+      status: "no_show",
+      source: "online_csv",
+      checkInDate: yesterday,
+      checkOutDate: tomorrow,
+      adults: 1,
+      children: 0,
+      currency: "ARS",
+      totalAmount: 180000,
+      depositAmount: 50000,
+      depositPaid: true,
+      depositMethod: "transfer",
+      depositReference: "Sena demo no-show",
+      notes: "Demo no-show para revisar estado y datos de huesped.",
+    },
+  });
+  await resetDemoReservationOperation(noShow.id);
+  await replaceDemoOccupants(hotelId, noShow.id, [
+    {
+      firstName: "Valeria",
+      lastName: "Costa",
+      documentNumber: "36777123",
+      phone: "11 4333-5522",
+      nationality: "Brasil",
+      ageCategory: "adult",
+      primary: true,
+    },
+  ]);
+
+  const cancelled = await prisma.reservation.upsert({
+    where: { hotelId_code: { hotelId, code: "R-DEMO-CANCELLED" } },
+    update: {
+      guestId: guestCancelled.id,
+      roomTypeId: standardTypeId,
+      assignedRoomId: room104.id,
+      status: "cancelled",
+      source: "direct",
+      checkInDate: inEightDays,
+      checkOutDate: inTenDays,
+      adults: 2,
+      children: 0,
+      currency: "ARS",
+      totalAmount: 220000,
+      depositAmount: 40000,
+      depositPaid: false,
+      depositMethod: null,
+      depositReference: null,
+      notes: "Demo cancelada para revisar estado sin bloquear calendario.",
+    },
+    create: {
+      hotelId,
+      guestId: guestCancelled.id,
+      roomTypeId: standardTypeId,
+      assignedRoomId: room104.id,
+      code: "R-DEMO-CANCELLED",
+      status: "cancelled",
+      source: "direct",
+      checkInDate: inEightDays,
+      checkOutDate: inTenDays,
+      adults: 2,
+      children: 0,
+      currency: "ARS",
+      totalAmount: 220000,
+      depositAmount: 40000,
+      depositPaid: false,
+      notes: "Demo cancelada para revisar estado sin bloquear calendario.",
+    },
+  });
+  await resetDemoReservationOperation(cancelled.id);
+  await replaceDemoOccupants(hotelId, cancelled.id, [
+    {
+      firstName: "Bruno",
+      lastName: "Silva",
+      documentNumber: "33333444",
+      phone: "11 4888-9900",
+      nationality: "Argentina",
+      ageCategory: "adult",
+      primary: true,
+    },
+    {
+      firstName: "Marcos",
+      lastName: "Silva",
+      documentNumber: "34444555",
+      phone: "11 4888-9901",
+      nationality: "Argentina",
+      ageCategory: "adult",
+    },
+  ]);
 }
 
 async function upsertGuest(
@@ -407,22 +822,75 @@ async function upsertGuest(
   lastName: string,
   documentNumber: string,
   email: string,
+  extra: { phone?: string; nationality?: string; notes?: string } = {},
 ) {
   return prisma.guest.upsert({
     where: { id },
-    update: { hotelId, firstName, lastName, documentType: "DNI", documentNumber, email },
-    create: { id, hotelId, firstName, lastName, documentType: "DNI", documentNumber, email },
+    update: {
+      hotelId,
+      firstName,
+      lastName,
+      documentType: "DNI",
+      documentNumber,
+      email,
+      phone: extra.phone,
+      nationality: extra.nationality,
+      notes: extra.notes,
+    },
+    create: {
+      id,
+      hotelId,
+      firstName,
+      lastName,
+      documentType: "DNI",
+      documentNumber,
+      email,
+      phone: extra.phone,
+      nationality: extra.nationality,
+      notes: extra.notes,
+    },
   });
 }
 
 async function resetDemoReservationOperation(reservationId: string) {
   const folio = await prisma.folio.findUnique({ where: { reservationId } });
   if (folio) {
+    await prisma.invoice.deleteMany({ where: { folioId: folio.id } });
     await prisma.payment.deleteMany({ where: { folioId: folio.id } });
     await prisma.charge.deleteMany({ where: { folioId: folio.id } });
     await prisma.folio.delete({ where: { id: folio.id } });
   }
   await prisma.stay.deleteMany({ where: { reservationId } });
+}
+
+async function replaceDemoOccupants(
+  hotelId: string,
+  reservationId: string,
+  occupants: {
+    firstName: string;
+    lastName: string;
+    documentNumber: string | null;
+    phone: string | null;
+    nationality: string | null;
+    ageCategory: "adult" | "child";
+    primary?: boolean;
+  }[],
+) {
+  await prisma.reservationOccupant.deleteMany({ where: { hotelId, reservationId } });
+  await prisma.reservationOccupant.createMany({
+    data: occupants.map((occupant, index) => ({
+      hotelId,
+      reservationId,
+      firstName: occupant.firstName,
+      lastName: occupant.lastName,
+      documentType: occupant.documentNumber ? "DNI" : null,
+      documentNumber: occupant.documentNumber,
+      phone: occupant.phone,
+      nationality: occupant.nationality,
+      ageCategory: occupant.ageCategory,
+      primary: occupant.primary ?? index === 0,
+    })),
+  });
 }
 
 async function seedOperationalTasks(hotelId: string) {

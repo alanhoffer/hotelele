@@ -23,6 +23,7 @@ import type { PaymentMethod } from "@hotel-pms/shared";
 import { Protected } from "../../components/protected";
 import {
   ReservationOperationalDrawer,
+  type ReservationRoomingPatch,
   type ReservationUpdatePatch,
 } from "../../components/reservation-operational-drawer";
 import { Shell } from "../../components/shell";
@@ -321,6 +322,22 @@ function ReservationsContent({ permissionsList }: { permissionsList: string[] })
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo actualizar la reserva.");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function replaceReservationOccupants(reservation: Reservation, patch: ReservationRoomingPatch) {
+    setError(null);
+    setBusyAction("rooming");
+    try {
+      await apiFetch(`/reservations/${reservation.id}/occupants`, {
+        method: "PUT",
+        body: JSON.stringify(patch),
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo actualizar la rooming list.");
     } finally {
       setBusyAction(null);
     }
@@ -752,6 +769,9 @@ function ReservationsContent({ permissionsList }: { permissionsList: string[] })
           onOpenRoom={(roomId) => {
             window.location.href = `/room-board?roomId=${roomId}`;
           }}
+          onReplaceOccupants={(reservation, patch) =>
+            replaceReservationOccupants(reservation as Reservation, patch)
+          }
           onUpdate={(reservation, patch) => updateReservation(reservation as Reservation, patch)}
           reservation={selectedReservation}
           room={selectedReservationRoom}

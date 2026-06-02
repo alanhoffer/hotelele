@@ -14,6 +14,7 @@ import { permissions, statusLabels, type PaymentMethod } from "@hotel-pms/shared
 import { Protected } from "../../components/protected";
 import {
   ReservationOperationalDrawer,
+  type ReservationRoomingPatch,
   type ReservationUpdatePatch,
 } from "../../components/reservation-operational-drawer";
 import { Shell } from "../../components/shell";
@@ -515,6 +516,22 @@ function CalendarContent({ permissionsList }: { permissionsList: string[] }) {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo actualizar la reserva.");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function replaceReservationOccupants(reservation: Reservation, patch: ReservationRoomingPatch) {
+    setError(null);
+    setBusyAction("rooming");
+    try {
+      await apiFetch(`/reservations/${reservation.id}/occupants`, {
+        method: "PUT",
+        body: JSON.stringify(patch),
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo actualizar la rooming list.");
     } finally {
       setBusyAction(null);
     }
@@ -1141,6 +1158,9 @@ function CalendarContent({ permissionsList }: { permissionsList: string[] }) {
           onOpenRoom={(roomId) => {
             window.location.href = `/room-board?roomId=${roomId}`;
           }}
+          onReplaceOccupants={(reservation, patch) =>
+            replaceReservationOccupants(reservation as Reservation, patch)
+          }
           onUpdate={(reservation, patch) => updateReservation(reservation as Reservation, patch)}
           reservation={selectedReservation}
           room={selectedReservationRoom}
@@ -1240,6 +1260,13 @@ function formatGuestName(reservation: Reservation) {
   return `${reservation.guest.firstName} ${reservation.guest.lastName}`;
 }
 
+function formatReservationGuestSummary(reservation: Reservation) {
+  const occupants = reservation.occupants?.length
+    ? reservation.occupants.map((occupant) => `${occupant.lastName}, ${occupant.firstName}`)
+    : [`${reservation.guest.lastName}, ${reservation.guest.firstName}`];
+  return occupants.join(" / ");
+}
+
 function formatMoneyValue(value?: string | number | null, currency = "ARS") {
   const amount = Number(value ?? 0);
   if (!amount) return "-";
@@ -1278,16 +1305,16 @@ function calendarCellTitle(
     ...holidayLabels.map((label) => `Dia especial: ${label}`),
     ...departures.map(
       (item) =>
-        `Salida ${DEFAULT_CHECK_OUT_TIME}: ${item.guest.lastName}, ${item.guest.firstName} (${item.code})`,
+        `Salida ${DEFAULT_CHECK_OUT_TIME}: ${formatReservationGuestSummary(item)} (${item.code})`,
     ),
     ...arrivals.map(
       (item) =>
-        `Entrada ${DEFAULT_CHECK_IN_TIME}: ${item.guest.lastName}, ${item.guest.firstName} (${item.code})`,
+        `Entrada ${DEFAULT_CHECK_IN_TIME}: ${formatReservationGuestSummary(item)} (${item.code})`,
     ),
   ];
   if (reservation && !arrivals.some((item) => item.id === reservation.id)) {
     lines.push(
-      `Alojada: ${reservation.guest.lastName}, ${reservation.guest.firstName} (${reservation.code})`,
+      `Alojada: ${formatReservationGuestSummary(reservation)} (${reservation.code})`,
     );
   }
   return lines.join("\n");

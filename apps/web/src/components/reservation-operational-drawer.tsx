@@ -16,8 +16,11 @@ import {
   Pencil,
   ReceiptText,
   Save,
+  ScanLine,
   Sparkles,
+  Smartphone,
   UserRound,
+  Users,
   Wallet,
   Wrench,
   X,
@@ -31,6 +34,8 @@ import {
   statusLabels,
 } from "@hotel-pms/shared";
 import type { ChargeKind, InvoiceStatus, InvoiceType, PaymentMethod } from "@hotel-pms/shared";
+import { apiFetch } from "../lib/api";
+import type { ParsedArgentineDni } from "../lib/argentine-dni";
 
 export type ReservationDrawerRoom = {
   id: string;
@@ -97,6 +102,21 @@ type ReservationOccupant = {
   primary: boolean;
 };
 
+type ReservationGuestRow = {
+  key: string;
+  firstName: string;
+  lastName: string;
+  documentType?: string | null;
+  documentNumber?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  nationality?: string | null;
+  notes?: string | null;
+  ageCategory: "adult" | "child";
+  primary: boolean;
+  pending: boolean;
+};
+
 type ReservationFolio = {
   id: string;
   status: string;
@@ -143,6 +163,7 @@ type ReservationOperationalDrawerProps = {
   canCreateInvoice?: boolean;
   onClose: () => void;
   onUpdate?: (reservation: OperationalReservation, patch: ReservationUpdatePatch) => void | Promise<void>;
+  onReplaceOccupants?: (reservation: OperationalReservation, patch: ReservationRoomingPatch) => void | Promise<void>;
   onOpenRoom?: (roomId: string) => void;
   onOpenCalendar?: (reservation: OperationalReservation) => void;
   onOpenReservations?: () => void;
@@ -156,7 +177,24 @@ const DEFAULT_CHECK_IN_TIME = "15:00";
 const DEFAULT_CHECK_OUT_TIME = "11:00";
 
 type ReservationDetailTab = "summary" | "guests" | "account" | "operation" | "history" | "calendar";
-type ReservationInlinePanel = "summary" | "guest" | "deposit" | null;
+type ReservationInlinePanel = "summary" | "guest" | "deposit" | "rooming" | null;
+
+type RemoteDocumentScanRequest = {
+  id: string;
+  reservationId: string;
+  reservationCode?: string;
+  occupantIndex: number;
+  occupantLabel?: string;
+  status: "waiting" | "received";
+  createdAt: string;
+  expiresAt: string;
+  result?: {
+    parsed?: ParsedArgentineDni;
+    imageDataUrl?: string;
+    note?: string;
+    receivedAt: string;
+  };
+};
 
 export type ReservationUpdatePatch = {
   checkInDate?: string;
@@ -179,7 +217,25 @@ export type ReservationUpdatePatch = {
     email?: string | null;
     phone?: string | null;
     nationality?: string | null;
+    notes?: string | null;
   };
+};
+
+export type ReservationRoomingPatch = {
+  adults: number;
+  children: number;
+  occupants: ReservationRoomingOccupant[];
+};
+
+export type ReservationRoomingOccupant = {
+  firstName: string;
+  lastName: string;
+  documentType: string | null;
+  documentNumber: string | null;
+  phone: string | null;
+  nationality: string | null;
+  ageCategory: "adult" | "child";
+  primary: boolean;
 };
 
 type ReservationSummaryForm = {
@@ -201,6 +257,24 @@ type ReservationGuestForm = {
   email: string;
   phone: string;
   nationality: string;
+  notes: string;
+};
+
+type RoomingOccupantForm = {
+  firstName: string;
+  lastName: string;
+  documentType: string;
+  documentNumber: string;
+  phone: string;
+  nationality: string;
+  ageCategory: "adult" | "child";
+  primary: boolean;
+};
+
+type RoomingForm = {
+  adults: string;
+  children: string;
+  occupants: RoomingOccupantForm[];
 };
 
 type ReservationDepositForm = {
@@ -229,6 +303,7 @@ export function ReservationOperationalDrawer({
   canCreateInvoice = false,
   onClose,
   onUpdate,
+  onReplaceOccupants,
   onOpenRoom,
   onOpenCalendar,
   onOpenReservations,
@@ -241,6 +316,14 @@ export function ReservationOperationalDrawer({
   const [inlinePanel, setInlinePanel] = useState<ReservationInlinePanel>(null);
   const [summaryForm, setSummaryForm] = useState<ReservationSummaryForm>(() => buildSummaryForm(reservation));
   const [guestForm, setGuestForm] = useState<ReservationGuestForm>(() => buildGuestForm(reservation));
+  const [roomingForm, setRoomingForm] = useState<RoomingForm>(() => buildRoomingForm(reservation));
+  const [activeGuestPanel, setActiveGuestPanel] = useState<number | null>(() =>
+    firstIncompleteRoomingIndex(buildRoomingForm(reservation)),
+  );
+  const [roomingError, setRoomingError] = useState<string | null>(null);
+  const [documentScanRequest, setDocumentScanRequest] = useState<RemoteDocumentScanRequest | null>(null);
+  const [documentScanMessage, setDocumentScanMessage] = useState<string | null>(null);
+  const [documentScanImage, setDocumentScanImage] = useState<string | null>(null);
   const [depositForm, setDepositForm] = useState<ReservationDepositForm>(() => buildDepositForm(reservation));
   const effectiveRoom = room ?? reservation.assignedRoom ?? null;
   const stay = stayFacts(reservation);
@@ -263,16 +346,65 @@ export function ReservationOperationalDrawer({
   const totalPax = reservation.adults + reservation.children;
   const completeOccupants = countCompleteOccupants(reservation.occupants ?? []);
   const roomingComplete = completeOccupants >= totalPax;
+  const guestRows = buildReservationGuestRows(reservation);
+  const guestsWithDocument = guestRows.filter((guest) => !guest.pending && guest.documentNumber?.trim()).length;
+  const guestsWithContact = guestRows.filter((guest) => !guest.pending && (guest.phone?.trim() || guest.email?.trim())).length;
+  const guestsWithNationality = guestRows.filter((guest) => !guest.pending && guest.nationality?.trim()).length;
   const latestInvoice = folio.invoices[0];
   const canEditReservation = Boolean(
     onUpdate && canUpdate && ["pending", "confirmed", "assigned"].includes(reservation.status),
   );
+  const canEditGuestContact = Boolean(
+    onUpdate && canUpdate && ["pending", "confirmed", "assigned", "in_house"].includes(reservation.status),
+  );
+  const canEditRooming = Boolean(
+    onReplaceOccupants &&
+      canUpdate &&
+      ["pending", "confirmed", "assigned", "in_house"].includes(reservation.status),
+  );
+  const isGuestReadOnly = ["completed", "cancelled", "no_show"].includes(reservation.status);
 
   useEffect(() => {
     setSummaryForm(buildSummaryForm(reservation));
     setGuestForm(buildGuestForm(reservation));
+    setRoomingForm(buildRoomingForm(reservation));
+    setActiveGuestPanel(firstIncompleteRoomingIndex(buildRoomingForm(reservation)));
+    setRoomingError(null);
+    setDocumentScanRequest(null);
+    setDocumentScanMessage(null);
+    setDocumentScanImage(null);
     setDepositForm(buildDepositForm(reservation));
   }, [reservation]);
+
+  useEffect(() => {
+    if (!documentScanRequest || documentScanRequest.status !== "waiting") return;
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const nextRequest = await apiFetch<RemoteDocumentScanRequest>(
+          `/document-scans/requests/${documentScanRequest.id}`,
+        );
+        if (cancelled) return;
+        if (nextRequest.status === "received" && nextRequest.result) {
+          applyDocumentScanResult(nextRequest.occupantIndex, nextRequest.result);
+          await apiFetch(`/document-scans/requests/${nextRequest.id}/consume`, { method: "POST" });
+          if (!cancelled) setDocumentScanRequest(null);
+          return;
+        }
+        setDocumentScanRequest(nextRequest);
+      } catch (err) {
+        if (!cancelled) {
+          setDocumentScanRequest(null);
+          setDocumentScanMessage(err instanceof Error ? err.message : "El pedido de escaneo ya no esta activo.");
+        }
+      }
+    }, 1800);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [documentScanRequest]);
 
   useEffect(() => {
     setInlinePanel(null);
@@ -297,7 +429,7 @@ export function ReservationOperationalDrawer({
 
   async function submitGuestUpdate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!onUpdate || !canEditReservation) return;
+    if (!onUpdate || !canEditGuestContact) return;
     await onUpdate(reservation, {
       guest: {
         firstName: guestForm.firstName,
@@ -307,7 +439,30 @@ export function ReservationOperationalDrawer({
         email: guestForm.email.trim() || null,
         phone: guestForm.phone.trim() || null,
         nationality: guestForm.nationality.trim() || null,
+        notes: guestForm.notes.trim() || null,
       },
+    });
+    setInlinePanel(null);
+  }
+
+  async function submitRoomingUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!onReplaceOccupants || !canEditRooming) return;
+    const normalizedForm = resizeRoomingForm(roomingForm);
+    setRoomingForm(normalizedForm);
+    const missingIndex = normalizedForm.occupants.findIndex(
+      (occupant) => !occupant.firstName.trim() || !occupant.lastName.trim(),
+    );
+    if (missingIndex >= 0) {
+      setActiveGuestPanel(missingIndex);
+      setRoomingError("Cada huesped necesita nombre y apellido antes de guardar.");
+      return;
+    }
+    setRoomingError(null);
+    await onReplaceOccupants(reservation, {
+      adults: Number(normalizedForm.adults),
+      children: Number(normalizedForm.children),
+      occupants: normalizeRoomingOccupants(normalizedForm.occupants),
     });
     setInlinePanel(null);
   }
@@ -328,6 +483,121 @@ export function ReservationOperationalDrawer({
   function openPanel(tab: ReservationDetailTab, panel: Exclude<ReservationInlinePanel, null>) {
     setActiveTab(tab);
     setInlinePanel((current) => (current === panel ? null : panel));
+  }
+
+  function openRoomingPanel() {
+    const nextForm = buildRoomingForm(reservation);
+    setRoomingForm(nextForm);
+    setActiveGuestPanel(firstIncompleteRoomingIndex(nextForm));
+    setRoomingError(null);
+    openPanel("guests", "rooming");
+  }
+
+  function updateRoomingCount(kind: "adults" | "children", value: string) {
+    setRoomingError(null);
+    setRoomingForm((current) => {
+      const next = resizeRoomingForm({ ...current, [kind]: value });
+      setActiveGuestPanel((panel) => {
+        if (panel === null) return firstIncompleteRoomingIndex(next);
+        return Math.min(panel, next.occupants.length - 1);
+      });
+      return next;
+    });
+  }
+
+  function updateRoomingOccupant(index: number, patch: Partial<RoomingOccupantForm>) {
+    setRoomingError(null);
+    setRoomingForm((current) => ({
+      ...current,
+      occupants: current.occupants.map((occupant, occupantIndex) =>
+        occupantIndex === index ? { ...occupant, ...patch } : occupant,
+      ),
+    }));
+  }
+
+  function updateRoomingOccupantAge(index: number, ageCategory: RoomingOccupantForm["ageCategory"]) {
+    setRoomingError(null);
+    setRoomingForm((current) => {
+      const occupants = current.occupants.map((occupant, occupantIndex) =>
+        occupantIndex === index ? { ...occupant, ageCategory } : occupant,
+      );
+      const adults = Math.max(1, occupants.filter((occupant) => occupant.ageCategory === "adult").length);
+      const children = occupants.filter((occupant) => occupant.ageCategory === "child").length;
+      return resizeRoomingForm({
+        adults: String(adults),
+        children: String(children),
+        occupants,
+      });
+    });
+  }
+
+  function markRoomingPrimary(index: number) {
+    setRoomingError(null);
+    setRoomingForm((current) => ({
+      ...current,
+      occupants: current.occupants.map((occupant, occupantIndex) => ({
+        ...occupant,
+        primary: occupantIndex === index,
+      })),
+    }));
+  }
+
+  async function startDocumentScan(index: number) {
+    const occupant = roomingForm.occupants[index];
+    const label =
+      occupant.firstName || occupant.lastName
+        ? `${occupant.firstName} ${occupant.lastName}`.trim()
+        : occupant.primary
+          ? "Titular"
+          : `Huesped ${index + 1}`;
+
+    setDocumentScanMessage(null);
+    setDocumentScanImage(null);
+    try {
+      const request = await apiFetch<RemoteDocumentScanRequest>("/document-scans/requests", {
+        method: "POST",
+        body: JSON.stringify({
+          reservationId: reservation.id,
+          reservationCode: reservation.code,
+          occupantIndex: index,
+          occupantLabel: label,
+        }),
+      });
+      setActiveGuestPanel(index);
+      setDocumentScanRequest(request);
+      setDocumentScanMessage("Pedido creado. Abrir /document-scanner en el celular con este mismo usuario.");
+    } catch (err) {
+      setDocumentScanMessage(err instanceof Error ? err.message : "No se pudo crear el pedido de escaneo.");
+    }
+  }
+
+  function applyDocumentScanResult(
+    index: number,
+    result: NonNullable<RemoteDocumentScanRequest["result"]>,
+  ) {
+    const parsed = result.parsed ?? { confidence: "low" };
+    setActiveGuestPanel(index);
+    setRoomingForm((current) => ({
+      ...current,
+      occupants: current.occupants.map((occupant, occupantIndex) =>
+        occupantIndex === index
+          ? {
+              ...occupant,
+              firstName: parsed.firstName || occupant.firstName,
+              lastName: parsed.lastName || occupant.lastName,
+              documentType: parsed.documentType || occupant.documentType || "DNI",
+              documentNumber: parsed.documentNumber || occupant.documentNumber,
+              nationality: parsed.nationality || occupant.nationality || "Argentina",
+            }
+          : occupant,
+      ),
+    }));
+    setDocumentScanImage(result.imageDataUrl ?? null);
+    setDocumentScanMessage(
+      parsed.documentNumber
+        ? `Documento recibido para ${parsed.lastName ?? ""} ${parsed.firstName ?? ""}`.trim()
+        : "Foto recibida. Revisar la imagen y completar los campos manualmente.",
+    );
   }
 
   return (
@@ -557,70 +827,282 @@ export function ReservationOperationalDrawer({
                   <span className="detail-kicker">Huespedes</span>
                   <h3>Rooming list y contacto</h3>
                 </div>
-                <span className={`status-pill ${roomingComplete ? "good" : "warn"}`}>
-                  {completeOccupants}/{totalPax} completos
+                <span className={`status-pill ${isGuestReadOnly ? "" : roomingComplete ? "good" : "warn"}`}>
+                  {isGuestReadOnly ? "Solo lectura" : `${completeOccupants}/${totalPax} completos`}
                 </span>
               </div>
+
               <div className="reservation-fact-grid compact">
                 <Fact
-                  label="Titular"
-                  value={`${reservation.guest.lastName}, ${reservation.guest.firstName}`}
-                  hint={reservation.guest.documentNumber ? `${reservation.guest.documentType ?? "Doc."} ${reservation.guest.documentNumber}` : "Documento pendiente"}
+                  label="Pax"
+                  value={`${reservation.adults} adultos / ${reservation.children} menores`}
+                  hint={`${totalPax} persona${totalPax === 1 ? "" : "s"} esperada${totalPax === 1 ? "" : "s"}`}
                 />
-                <Fact label="Telefono" value={reservation.guest.phone || "-"} />
-                <Fact label="Email" value={reservation.guest.email || "-"} />
-                <Fact label="Nacionalidad" value={reservation.guest.nationality || "-"} />
+                <Fact label="Documentos" value={`${guestsWithDocument}/${totalPax}`} hint="Personas con documento" />
+                <Fact label="Contacto" value={`${guestsWithContact}/${totalPax}`} hint="Telefono o email cargado" />
+                <Fact label="Nacionalidad" value={`${guestsWithNationality}/${totalPax}`} hint="Dato migratorio" />
               </div>
-              {reservation.occupants?.length ? (
-                <div className="reservation-occupant-table">
-                  {reservation.occupants.map((occupant, index) => (
-                    <div className="reservation-occupant-row" key={occupant.id ?? `${occupant.lastName}-${index}`}>
-                      <div>
-                        <strong>
-                          {occupant.lastName}, {occupant.firstName}
-                        </strong>
-                        <span>{occupant.primary ? "Titular" : occupant.ageCategory === "adult" ? "Adulto" : "Menor"}</span>
-                      </div>
-                      <small>
-                        {occupant.documentNumber
-                          ? `${occupant.documentType ?? "Doc."} ${occupant.documentNumber}`
-                          : "Documento pendiente"}
-                      </small>
+
+              <div className="reservation-guest-list" role="table" aria-label="Lista de huespedes">
+                <div className="reservation-guest-list-head" role="row">
+                  <span>Huesped</span>
+                  <span>Documento</span>
+                  <span>Contacto</span>
+                  <span>Nacionalidad</span>
+                </div>
+                {guestRows.map((guest, index) => (
+                  <GuestRosterRow guest={guest} index={index} key={guest.key} />
+                ))}
+              </div>
+
+              <div className="reservation-guest-actions">
+                {isGuestReadOnly ? (
+                  <div className="reservation-readonly-box">
+                    <Ban size={16} />
+                    <div>
+                      <strong>Solo lectura</strong>
+                      <span>La reserva esta {statusLabels[reservation.status] ?? reservation.status}; no permite modificar huespedes.</span>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="reservation-empty-block">
-                  <strong>Rooming list pendiente</strong>
-                  <span>Antes del check-in deben cargarse todas las personas que duermen en la habitacion.</span>
-                </div>
-              )}
-              <ReservationActionPanel
-                title="Datos que se pueden modificar"
-                items={[
-                  "Titular, documento, contacto y nacionalidad",
-                  "Rooming list completa antes del check-in",
-                  "Ficha de ingreso y pax adicional desde la habitacion",
-                ]}
-              />
-              <div className="reservation-edit-toolbar">
-                <button
-                  disabled={!canEditReservation || busyAction === "update"}
-                  onClick={() => openPanel("guests", "guest")}
-                  type="button"
-                >
-                  <Pencil size={15} />
-                  Editar titular
-                </button>
-                {effectiveRoom && onOpenRoom ? (
-                  <button onClick={() => onOpenRoom(effectiveRoom.id)} type="button">
-                    <UserRound size={15} />
-                    Completar rooming
-                  </button>
-                ) : null}
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      className="primary-button"
+                      disabled={!canEditRooming || busyAction === "rooming"}
+                      onClick={openRoomingPanel}
+                      type="button"
+                    >
+                      <Users size={15} />
+                      {roomingComplete ? "Editar huespedes" : "Completar rooming"}
+                    </button>
+                    <button
+                      disabled={!canEditGuestContact || busyAction === "update"}
+                      onClick={() => openPanel("guests", "guest")}
+                      type="button"
+                    >
+                      <Pencil size={15} />
+                      Editar contacto titular
+                    </button>
+                    {effectiveRoom && onOpenRoom ? (
+                      <button onClick={() => onOpenRoom(effectiveRoom.id)} type="button">
+                        <UserRound size={15} />
+                        Abrir habitacion
+                      </button>
+                    ) : null}
+                  </>
+                )}
               </div>
+
+              {inlinePanel === "rooming" ? (
+                <form className="reservation-rooming-form" onSubmit={submitRoomingUpdate}>
+                  <div className="reservation-rooming-header">
+                    <div>
+                      <span className="detail-kicker">Edicion de rooming</span>
+                      <h4>Huespedes de la estadia</h4>
+                    </div>
+                    <button type="button" onClick={() => setInlinePanel(null)}>
+                      <X size={15} />
+                      Cancelar
+                    </button>
+                  </div>
+                  <div className="form-grid two">
+                    <label>
+                      Adultos
+                      <input
+                        min="1"
+                        required
+                        type="number"
+                        value={roomingForm.adults}
+                        onChange={(event) => updateRoomingCount("adults", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Menores
+                      <input
+                        min="0"
+                        type="number"
+                        value={roomingForm.children}
+                        onChange={(event) => updateRoomingCount("children", event.target.value)}
+                      />
+                    </label>
+                  </div>
+                  {roomingError ? <div className="reservation-form-error">{roomingError}</div> : null}
+                  <div className="reservation-rooming-editor">
+                    {roomingForm.occupants.map((occupant, index) => (
+                      <section
+                        className={`reservation-rooming-card ${activeGuestPanel === index ? "active" : ""}`}
+                        key={`${occupant.ageCategory}-${index}`}
+                      >
+                        <button
+                          className="reservation-rooming-card-header"
+                          type="button"
+                          onClick={() => setActiveGuestPanel((current) => (current === index ? null : index))}
+                        >
+                          <span>
+                            <strong>{occupant.primary ? "Titular" : `Huesped ${index + 1}`}</strong>
+                            <small>
+                              {occupant.firstName || occupant.lastName
+                                ? `${occupant.lastName}, ${occupant.firstName}`
+                                : "Datos pendientes"}
+                            </small>
+                          </span>
+                          <i>{occupant.ageCategory === "child" ? "Menor" : "Adulto"}</i>
+                        </button>
+                        {activeGuestPanel === index ? (
+                          <div className="reservation-rooming-fields">
+                            <div className="form-grid two">
+                              <label>
+                                Nombre
+                                <input
+                                  required
+                                  value={occupant.firstName}
+                                  onChange={(event) => updateRoomingOccupant(index, { firstName: event.target.value })}
+                                />
+                              </label>
+                              <label>
+                                Apellido
+                                <input
+                                  required
+                                  value={occupant.lastName}
+                                  onChange={(event) => updateRoomingOccupant(index, { lastName: event.target.value })}
+                                />
+                              </label>
+                              <label>
+                                Tipo doc.
+                                <input
+                                  value={occupant.documentType}
+                                  onChange={(event) => updateRoomingOccupant(index, { documentType: event.target.value })}
+                                />
+                              </label>
+                              <label>
+                                Documento
+                                <input
+                                  value={occupant.documentNumber}
+                                  onChange={(event) => updateRoomingOccupant(index, { documentNumber: event.target.value })}
+                                />
+                              </label>
+                              <label>
+                                Telefono
+                                <input
+                                  value={occupant.phone}
+                                  onChange={(event) => updateRoomingOccupant(index, { phone: event.target.value })}
+                                />
+                              </label>
+                              <label>
+                                Nacionalidad
+                                <input
+                                  value={occupant.nationality}
+                                  onChange={(event) => updateRoomingOccupant(index, { nationality: event.target.value })}
+                                />
+                              </label>
+                              <label>
+                                Tipo de huesped
+                                <select
+                                  value={occupant.ageCategory}
+                                  onChange={(event) =>
+                                    updateRoomingOccupantAge(
+                                      index,
+                                      event.target.value === "child" ? "child" : "adult",
+                                    )
+                                  }
+                                >
+                                  <option value="adult">Adulto</option>
+                                  <option value="child">Menor</option>
+                                </select>
+                              </label>
+                              <label className="checkbox-line rooming-primary-line">
+                                <input
+                                  type="radio"
+                                  name="reservation-primary-guest"
+                                  checked={occupant.primary}
+                                  onChange={() => markRoomingPrimary(index)}
+                                />
+                                Titular de la reserva
+                              </label>
+                            </div>
+                            <div className="document-scan-inline">
+                              <div>
+                                <span>
+                                  <ScanLine size={16} />
+                                  DNI remoto
+                                </span>
+                                <p>
+                                  Desde el celular logueado con tu usuario entra a{" "}
+                                  <strong>/document-scanner</strong> y escanea el PDF417 o envia foto.
+                                </p>
+                              </div>
+                              <button
+                                className="secondary-button"
+                                disabled={
+                                  !canEditRooming ||
+                                  documentScanRequest?.status === "waiting" ||
+                                  busyAction === "rooming"
+                                }
+                                type="button"
+                                onClick={() => startDocumentScan(index)}
+                              >
+                                <Smartphone size={16} />
+                                {documentScanRequest?.status === "waiting" &&
+                                documentScanRequest.occupantIndex === index
+                                  ? "Esperando celular..."
+                                  : "Escanear con celular"}
+                              </button>
+                            </div>
+                            {documentScanRequest?.status === "waiting" &&
+                            documentScanRequest.occupantIndex === index ? (
+                              <div className="document-scan-status">
+                                <span className="status-pill warn">Esperando</span>
+                                <p>
+                                  Pedido activo para {documentScanRequest.occupantLabel || `Huesped ${index + 1}`}.
+                                  Vence a las{" "}
+                                  {new Date(documentScanRequest.expiresAt).toLocaleTimeString("es-AR", {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}
+                                  .
+                                </p>
+                              </div>
+                            ) : null}
+                            {documentScanMessage && activeGuestPanel === index ? (
+                              <div className="document-scan-status">
+                                <span className="status-pill good">Scanner</span>
+                                <p>{documentScanMessage}</p>
+                              </div>
+                            ) : null}
+                            {documentScanImage && activeGuestPanel === index ? (
+                              <div className="document-scan-preview">
+                                <img alt="DNI recibido desde celular" src={documentScanImage} />
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </section>
+                    ))}
+                  </div>
+                  <div className="reservation-form-footer">
+                    <button type="button" onClick={() => setInlinePanel(null)}>
+                      Cancelar
+                    </button>
+                    <button className="primary-button" disabled={busyAction === "rooming"}>
+                      <Save size={15} />
+                      {busyAction === "rooming" ? "Guardando..." : "Guardar cambios"}
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+
               {inlinePanel === "guest" ? (
-                <form className="reservation-inline-form" onSubmit={submitGuestUpdate}>
+                <form className="reservation-contact-form" onSubmit={submitGuestUpdate}>
+                  <div className="reservation-rooming-header">
+                    <div>
+                      <span className="detail-kicker">Titular</span>
+                      <h4>Contacto y datos principales</h4>
+                    </div>
+                    <button type="button" onClick={() => setInlinePanel(null)}>
+                      <X size={15} />
+                      Cancelar
+                    </button>
+                  </div>
                   <div className="form-grid two">
                     <label>
                       Nombre
@@ -674,11 +1156,23 @@ export function ReservationOperationalDrawer({
                         onChange={(event) => setGuestForm({ ...guestForm, email: event.target.value })}
                       />
                     </label>
+                    <label className="wide">
+                      Notas
+                      <input
+                        value={guestForm.notes}
+                        onChange={(event) => setGuestForm({ ...guestForm, notes: event.target.value })}
+                      />
+                    </label>
                   </div>
-                  <button className="primary-button" disabled={busyAction === "update"}>
-                    <Save size={15} />
-                    {busyAction === "update" ? "Guardando..." : "Guardar titular"}
-                  </button>
+                  <div className="reservation-form-footer">
+                    <button type="button" onClick={() => setInlinePanel(null)}>
+                      Cancelar
+                    </button>
+                    <button className="primary-button" disabled={busyAction === "update"}>
+                      <Save size={15} />
+                      {busyAction === "update" ? "Guardando..." : "Guardar contacto"}
+                    </button>
+                  </div>
                 </form>
               ) : null}
             </section>
@@ -986,6 +1480,47 @@ function Fact({ label, value, hint }: { label: string; value: string; hint?: str
       <strong>{value}</strong>
       {hint ? <small>{hint}</small> : null}
     </div>
+  );
+}
+
+function GuestRosterRow({ guest, index }: { guest: ReservationGuestRow; index: number }) {
+  const displayName = guest.pending
+    ? `Huesped ${index + 1} pendiente`
+    : `${guest.lastName}, ${guest.firstName}`;
+  const role = guest.primary ? "Titular" : guest.ageCategory === "child" ? "Menor" : "Adulto";
+  const documentLabel = guest.documentNumber
+    ? `${guest.documentType ?? "Doc."} ${guest.documentNumber}`
+    : "Documento pendiente";
+  const phoneLabel = guest.phone?.trim() || "Telefono pendiente";
+  const emailLabel = guest.email?.trim() || "Email pendiente";
+  const nationalityLabel = guest.nationality?.trim() || "Nacionalidad pendiente";
+
+  return (
+    <article className={`reservation-guest-row ${guest.pending ? "pending" : ""}`} role="row">
+      <div className="reservation-guest-main" role="cell">
+        <div>
+          <span className="reservation-guest-index">#{index + 1}</span>
+          <strong>{displayName}</strong>
+        </div>
+        <span className={`status-pill ${guest.pending ? "warn" : guest.documentNumber ? "good" : "warn"}`}>
+          {guest.pending ? "Falta cargar" : role}
+        </span>
+      </div>
+      <div className="reservation-guest-cell" role="cell">
+        <span>Documento</span>
+        <strong>{documentLabel}</strong>
+      </div>
+      <div className="reservation-guest-cell" role="cell">
+        <span>Contacto</span>
+        <strong>{phoneLabel}</strong>
+        <small>{emailLabel}</small>
+      </div>
+      <div className="reservation-guest-cell" role="cell">
+        <span>Nacionalidad</span>
+        <strong>{nationalityLabel}</strong>
+        {guest.notes ? <small>{guest.notes}</small> : null}
+      </div>
+    </article>
   );
 }
 
@@ -1298,6 +1833,72 @@ function countCompleteOccupants(occupants: ReservationOccupant[]) {
   return occupants.filter((occupant) => occupant.firstName?.trim() && occupant.lastName?.trim()).length;
 }
 
+function buildReservationGuestRows(reservation: OperationalReservation): ReservationGuestRow[] {
+  const totalPax = reservation.adults + reservation.children;
+  const occupantRows =
+    reservation.occupants?.map((occupant, index) => ({
+      key: occupant.id ?? `occupant-${index}`,
+      firstName: occupant.firstName,
+      lastName: occupant.lastName,
+      documentType: occupant.documentType,
+      documentNumber: occupant.documentNumber,
+      email: occupant.primary ? reservation.guest.email : null,
+      phone: occupant.phone,
+      nationality: occupant.nationality,
+      notes: occupant.primary ? reservation.guest.notes : null,
+      ageCategory: occupant.ageCategory,
+      primary: occupant.primary,
+      pending: false,
+    })) ?? [];
+
+  const baseRows: ReservationGuestRow[] =
+    occupantRows.length > 0
+      ? occupantRows
+      : [
+          {
+            key: "guest-primary",
+            firstName: reservation.guest.firstName,
+            lastName: reservation.guest.lastName,
+            documentType: reservation.guest.documentType,
+            documentNumber: reservation.guest.documentNumber,
+            email: reservation.guest.email,
+            phone: reservation.guest.phone,
+            nationality: reservation.guest.nationality,
+            notes: reservation.guest.notes,
+            ageCategory: "adult",
+            primary: true,
+            pending: false,
+          },
+        ];
+
+  const rows: ReservationGuestRow[] = [...baseRows];
+  const missingRows = Math.max(totalPax - rows.length, 0);
+
+  for (let index = 0; index < missingRows; index += 1) {
+    const currentAdults = rows.filter((guest) => guest.ageCategory === "adult").length;
+    const currentChildren = rows.filter((guest) => guest.ageCategory === "child").length;
+    const ageCategory: "adult" | "child" =
+      currentAdults < reservation.adults || currentChildren >= reservation.children ? "adult" : "child";
+
+    rows.push({
+      key: `pending-${index}`,
+      firstName: "",
+      lastName: "",
+      documentType: null,
+      documentNumber: null,
+      email: null,
+      phone: null,
+      nationality: null,
+      notes: null,
+      ageCategory,
+      primary: false,
+      pending: true,
+    });
+  }
+
+  return rows;
+}
+
 function sourceLabel(source?: string | null) {
   const labels: Record<string, string> = {
     direct: "Directa",
@@ -1386,7 +1987,85 @@ function buildGuestForm(reservation: OperationalReservation): ReservationGuestFo
     email: reservation.guest.email ?? "",
     phone: reservation.guest.phone ?? "",
     nationality: reservation.guest.nationality ?? "",
+    notes: reservation.guest.notes ?? "",
   };
+}
+
+function buildRoomingForm(reservation: OperationalReservation): RoomingForm {
+  const rows = buildReservationGuestRows(reservation);
+  return resizeRoomingForm({
+    adults: String(reservation.adults),
+    children: String(reservation.children),
+    occupants: rows.map((guest) => ({
+      firstName: guest.firstName,
+      lastName: guest.lastName,
+      documentType: guest.documentType ?? "DNI",
+      documentNumber: guest.documentNumber ?? "",
+      phone: guest.phone ?? "",
+      nationality: guest.nationality ?? "",
+      ageCategory: guest.ageCategory,
+      primary: guest.primary,
+    })),
+  });
+}
+
+function resizeRoomingForm(form: RoomingForm): RoomingForm {
+  const adults = Math.max(1, Number.parseInt(form.adults, 10) || 1);
+  const children = Math.max(0, Number.parseInt(form.children, 10) || 0);
+  const adultOccupants = form.occupants.filter((occupant) => occupant.ageCategory === "adult");
+  const childOccupants = form.occupants.filter((occupant) => occupant.ageCategory === "child");
+
+  while (adultOccupants.length < adults) {
+    adultOccupants.push(emptyRoomingOccupant("adult", adultOccupants.length === 0));
+  }
+  while (childOccupants.length < children) {
+    childOccupants.push(emptyRoomingOccupant("child", false));
+  }
+
+  const occupants = [...adultOccupants.slice(0, adults), ...childOccupants.slice(0, children)];
+  const primaryIndex = occupants.findIndex((occupant) => occupant.primary);
+  return {
+    adults: String(adults),
+    children: String(children),
+    occupants: occupants.map((occupant, index) => ({
+      ...occupant,
+      primary: primaryIndex >= 0 ? index === primaryIndex : index === 0,
+    })),
+  };
+}
+
+function emptyRoomingOccupant(ageCategory: RoomingOccupantForm["ageCategory"], primary: boolean): RoomingOccupantForm {
+  return {
+    firstName: "",
+    lastName: "",
+    documentType: "DNI",
+    documentNumber: "",
+    phone: "",
+    nationality: "",
+    ageCategory,
+    primary,
+  };
+}
+
+function normalizeRoomingOccupants(occupants: RoomingOccupantForm[]): ReservationRoomingOccupant[] {
+  const primaryIndex = occupants.findIndex((occupant) => occupant.primary);
+  return occupants.map((occupant, index) => ({
+    firstName: occupant.firstName.trim(),
+    lastName: occupant.lastName.trim(),
+    documentType: occupant.documentType.trim() || null,
+    documentNumber: occupant.documentNumber.trim() || null,
+    phone: occupant.phone.trim() || null,
+    nationality: occupant.nationality.trim() || null,
+    ageCategory: occupant.ageCategory,
+    primary: primaryIndex >= 0 ? index === primaryIndex : index === 0,
+  }));
+}
+
+function firstIncompleteRoomingIndex(form: RoomingForm) {
+  const index = form.occupants.findIndex(
+    (occupant) => !occupant.firstName.trim() || !occupant.lastName.trim(),
+  );
+  return index >= 0 ? index : 0;
 }
 
 function buildDepositForm(reservation: OperationalReservation): ReservationDepositForm {
